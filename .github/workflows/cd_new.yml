@@ -1,0 +1,140 @@
+name: "Continuous Deployment"
+on:
+  # Make workflow reusable
+  workflow_call:
+    inputs:
+      APP_NAME:
+        type: string
+        required: true
+      GAR_BETA_REGION:
+        type: string
+        required: true
+      GAR_PROD_REGION:
+        type: string
+        required: true
+      GCP_STAGING_PROJECT_ID:
+        type: string
+        required: true
+      GCP_PROD_PROJECT_ID:
+        type: string
+        required: true
+      GAR_STAGING_REPO:
+        type: string
+        required: true
+      GAR_PRODUCTION_REPO:
+        type: string
+        required: true
+      DOCKER_BUILD_TARGET:
+        type: string
+        required: false
+        default: 'production'
+      debug:
+        type: boolean
+        required: false
+        default: false
+      service:
+        type: string
+        required: false
+        default: 'gcloud'
+    secrets:
+      PROD_GOOGLE_AUTH:
+        required: true
+      BETA_GOOGLE_AUTH:
+        required: true
+
+jobs:
+  deployment:
+    runs-on: ubuntu-latest
+    if: ${{ (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      github.event_name == 'workflow_dispatch' || github.event_name == 'push' }}
+    env:
+      PROD_DEPLOY: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_env == 'production') || github.event_name == 'push' }}
+      STAGING_DEPLOY: ${{ github.event_name == 'workflow_run' || (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_env != 'production') }}
+      STAGING_DEPLOY_ENV: ${{github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_env || 'beta'}}
+      DEPLOY_BRANCH: ${{github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.ref}}
+
+    steps:
+      # common steps
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_BRANCH }}
+
+      - name: Cancel Previous Workflow Actions
+        uses: styfle/cancel-workflow-action@0.9.1
+        with:
+          access_token: ${{ github.token }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        if: inputs.service == 'gcloud'
+
+      - uses: jpribyl/action-docker-layer-caching@v0.1.0
+        continue-on-error: true
+        with:
+          key: CD-docker-cache-${{ hashFiles('Dockerfile') }}
+          restore-keys: app-cache-
+
+      - name: Calculate current version
+        run: |
+          git_hash=$(git rev-parse --verify HEAD || :)
+          default_version=${git_hash:-$(date +%s)}
+          deploy_version=$(git tag --contains $GIT_HASH | head -n 1)
+          deploy_version=${deploy_version:-$default_version}
+          echo "DEPLOY_VERSION=$deploy_version" >> $GITHUB_ENV
+
+      - name: Install Specific Install gem
+        run: sudo gem install specific_install
+
+      - name: Install Kubernetes Helper with Specific Install
+        run: sudo gem specific_install -l https://github.com/ReverseRetail/kubernetes_helper
+
+      # Staging deployment
+
+      - name: Push Docker Image to GAR (Staging)
+        uses: a94763075/push-to-gar-github-action@v0.3.1
+        with:
+          gcloud_service_key: ${{ secrets.BETA_GOOGLE_AUTH }}
+          project_id: ${{ inputs.GCP_STAGING_PROJECT_ID }}
+          registry: ${{ inputs.GAR_BETA_REGION }}
+          repository: ${{ inputs.GAR_STAGING_REPO }}
+          image_name: ${{ inputs.APP_NAME }}-staging
+          image_tags: ${{ github.sha }}
+          dockerfile: './Dockerfile'
+          target: ${{ inputs.DOCKER_BUILD_TARGET }}
+        if: ${{ env.STAGING_DEPLOY == 'true' }}
+
+      - name: Staging Deployment
+        env:
+          KB_AUTH_TOKEN: ${{ secrets.BETA_GOOGLE_AUTH }}
+          DEPLOY_ENV: ${{ env.STAGING_DEPLOY_ENV }}
+          DEPLOY_VERSION: ${{ env.DEPLOY_VERSION }}
+        run: kubernetes_helper run_deployment 'cd.sh'
+        if: ${{ env.STAGING_DEPLOY == 'true' }}
+
+      # Production deployment
+
+      - name: Push Docker Image to GAR (Production)
+        uses: a94763075/push-to-gar-github-action@v0.3.1
+        with:
+          gcloud_service_key: ${{ secrets.PROD_GOOGLE_AUTH }}
+          project_id: ${{ inputs.GCP_PROD_PROJECT_ID }}
+          registry: ${{ inputs.GAR_PROD_REGION }}
+          repository: ${{ inputs.GAR_PRODUCTION_REPO }}
+          image_name: ${{ inputs.APP_NAME }}-production
+          image_tags: ${{ github.sha }}
+          dockerfile: './Dockerfile'
+          target: ${{ inputs.DOCKER_BUILD_TARGET }}
+        if: ${{ env.PROD_DEPLOY == 'true' }}
+
+      - name: Production deployment
+        env:
+          KB_AUTH_TOKEN: ${{ secrets.PROD_GOOGLE_AUTH }}
+          DEPLOY_ENV: production
+          DEPLOY_VERSION: ${{ env.DEPLOY_VERSION }}
+        run: kubernetes_helper run_deployment 'cd.sh'
+        if: ${{ env.PROD_DEPLOY == 'true' }}
+
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@v3
+        if: inputs.debug && always()
