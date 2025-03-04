@@ -69,7 +69,7 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
         if: inputs.service == 'gcloud'
 
-      - uses: jpribyl/action-docker-layer-caching@v0.1.0
+      - uses: jpribyl/action-docker-layer-caching@v0.1.1
         continue-on-error: true
         with:
           key: CD-docker-cache-${{ hashFiles('Dockerfile') }}
@@ -92,7 +92,7 @@ jobs:
       # Staging deployment
 
       - name: Push Docker Image to GAR (Staging)
-        uses: a94763075/push-to-gar-github-action@v0.3.1
+        uses: a94763075/push-to-gar-github-action@v0.3.3
         with:
           gcloud_service_key: ${{ secrets.BETA_GOOGLE_AUTH }}
           project_id: ${{ inputs.GCP_STAGING_PROJECT_ID }}
@@ -115,7 +115,7 @@ jobs:
       # Production deployment
 
       - name: Push Docker Image to GAR (Production)
-        uses: a94763075/push-to-gar-github-action@v0.3.1
+        uses: a94763075/push-to-gar-github-action@v0.3.3
         with:
           gcloud_service_key: ${{ secrets.PROD_GOOGLE_AUTH }}
           project_id: ${{ inputs.GCP_PROD_PROJECT_ID }}
