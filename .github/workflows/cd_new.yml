@@ -61,7 +61,7 @@ jobs:
           ref: ${{ env.DEPLOY_BRANCH }}
 
       - name: Cancel Previous Workflow Actions
-        uses: styfle/cancel-workflow-action@0.9.1
+        uses: styfle/cancel-workflow-action@0.12.0
         with:
           access_token: ${{ github.token }}
 
