@@ -54,7 +54,7 @@ on:
 
 jobs:
   rspec:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     env:
       DOCKER_CLIENT_TIMEOUT: 120
       COMPOSE_HTTP_TIMEOUT: 120
