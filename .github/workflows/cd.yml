@@ -64,6 +64,15 @@ jobs:
       STAGING_DEPLOY: ${{ github.event_name == 'workflow_run' || (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_env != 'production') }}
       STAGING_DEPLOY_ENV: ${{github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_env || 'beta'}}
       DEPLOY_BRANCH: ${{github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.ref}}
+      # kubectl's gke-gcloud-auth-plugin takes its token from the credentials the
+      # push-to-gar action's google-github-actions/auth step exported (the same key as
+      # KB_AUTH_TOKEN), not from `gcloud config config-helper`. On gcloud 591.0.0 that
+      # helper crashes on a service account key while the auth action's
+      # CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE is in place ("'Credentials' object has no
+      # attribute 'private_key_id'", google-github-actions/auth#535), which has failed
+      # every deployment through this workflow since 2026-11-02. buddy's own cd.yml has
+      # set the same since 2026-10-30.
+      CLOUDSDK_CONTAINER_USE_APPLICATION_DEFAULT_CREDENTIALS: 'true'
 
     steps:
       # common steps
