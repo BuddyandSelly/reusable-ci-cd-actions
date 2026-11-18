@@ -56,7 +56,7 @@ jobs:
       STAGING_DEPLOY_ENV: ${{github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_env || 'beta'}}
       DEPLOY_BRANCH: ${{github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.ref}}
       # kubectl's gke-gcloud-auth-plugin takes its token from the credentials the
-      # push-to-gar action's google-github-actions/auth step exported (the same key as
+      # google-github-actions/auth step below exported (the same key as
       # KB_AUTH_TOKEN), not from `gcloud config config-helper`. On gcloud 591.0.0 that
       # helper crashes on a service account key while the auth action's
       # CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE is in place ("'Credentials' object has no
@@ -68,9 +68,15 @@ jobs:
     steps:
       # common steps
 
-      - uses: actions/checkout@v7
+      # Blacksmith keeps a git mirror on a sticky disk and updates it, instead of
+      # cloning the repository from scratch every run. dissociate copies the objects
+      # into the workspace, so nothing downstream is left depending on the mirror
+      # mount: the deployment steps below run outside this action's control.
+      - name: Checkout
+        uses: useblacksmith/checkout@v1
         with:
           ref: ${{ env.DEPLOY_BRANCH }}
+          dissociate: true
 
       - name: Cancel Previous Workflow Actions
         uses: styfle/cancel-workflow-action@0.12.0
@@ -81,11 +87,27 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
         if: inputs.service == 'gcloud'
 
-      - uses: jpribyl/action-docker-layer-caching@v0.1.1
-        continue-on-error: true
+      # Blacksmith's builder keeps its layer cache on a disk of its own, under this
+      # key. Without cache-key the action throws, catches its own error and quietly
+      # falls back to a plain local builder, so every deploy would rebuild the image
+      # from nothing. Keyed by the Dockerfile, the same key tests.yml uses: an app's
+      # test and production targets usually share their early stages, so a deploy
+      # picks up the layers the pull request runs keep warm. This replaces
+      # jpribyl/action-docker-layer-caching, which saved and restored the whole
+      # image store through the GitHub cache on every run.
+      - name: Set up Docker builder
+        uses: useblacksmith/setup-docker-builder@v2.3.0
         with:
-          key: CD-docker-cache-${{ hashFiles('Dockerfile') }}
-          restore-keys: app-cache-
+          cache-key: Dockerfile
+
+      # The image is tagged with the commit that was checked out, which is the tag
+      # the deployment script looks for (cd.sh in kubernetes_helper). github.sha is
+      # not that commit when "App tests" on a release branch started this run: there
+      # it names the default branch's head, so that deployment pointed the cluster
+      # at a tag nothing had been pushed under.
+      - name: Name the image tag
+        id: commit
+        run: echo "sha=$(git rev-parse --verify HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Calculate current version
         run: |
@@ -107,17 +129,30 @@ jobs:
 
       # Staging deployment
 
-      - name: Push Docker Image to GAR (Staging)
-        uses: a94763075/push-to-gar-github-action@v0.3.3
+      # These three steps replace a94763075/push-to-gar-github-action, which ran a
+      # plain `docker build` and so could not use the builder's cache.
+      - name: Google Cloud Authentication (Staging)
+        uses: google-github-actions/auth@v3.0.0
         with:
-          gcloud_service_key: ${{ secrets.BETA_GOOGLE_AUTH }}
-          project_id: ${{ inputs.GCP_STAGING_PROJECT_ID }}
+          credentials_json: ${{ secrets.BETA_GOOGLE_AUTH }}
+        if: ${{ env.STAGING_DEPLOY == 'true' }}
+
+      - name: Login to Google Artifact Registry (Staging)
+        uses: docker/login-action@v4.8.0
+        with:
+          username: _json_key
+          password: ${{ secrets.BETA_GOOGLE_AUTH }}
           registry: ${{ inputs.GAR_BETA_REGION }}
-          repository: ${{ inputs.GAR_STAGING_REPO }}
-          image_name: ${{ inputs.APP_NAME }}-staging
-          image_tags: ${{ github.sha }}
-          dockerfile: './Dockerfile'
+        if: ${{ env.STAGING_DEPLOY == 'true' }}
+
+      - name: Build & Push Docker Image to GAR (Staging)
+        uses: useblacksmith/build-push-action@v2.3.0
+        with:
+          context: .
+          file: ./Dockerfile
           target: ${{ inputs.DOCKER_BUILD_TARGET }}
+          push: true
+          tags: ${{ inputs.GAR_BETA_REGION }}/${{ inputs.GCP_STAGING_PROJECT_ID }}/${{ inputs.GAR_STAGING_REPO }}/${{ inputs.APP_NAME }}-staging:${{ steps.commit.outputs.sha }}
         if: ${{ env.STAGING_DEPLOY == 'true' }}
 
       - name: Staging Deployment
@@ -130,17 +165,28 @@ jobs:
 
       # Production deployment
 
-      - name: Push Docker Image to GAR (Production)
-        uses: a94763075/push-to-gar-github-action@v0.3.3
+      - name: Google Cloud Authentication (Production)
+        uses: google-github-actions/auth@v3.0.0
         with:
-          gcloud_service_key: ${{ secrets.PROD_GOOGLE_AUTH }}
-          project_id: ${{ inputs.GCP_PROD_PROJECT_ID }}
+          credentials_json: ${{ secrets.PROD_GOOGLE_AUTH }}
+        if: ${{ env.PROD_DEPLOY == 'true' }}
+
+      - name: Login to Google Artifact Registry (Production)
+        uses: docker/login-action@v4.8.0
+        with:
+          username: _json_key
+          password: ${{ secrets.PROD_GOOGLE_AUTH }}
           registry: ${{ inputs.GAR_PROD_REGION }}
-          repository: ${{ inputs.GAR_PRODUCTION_REPO }}
-          image_name: ${{ inputs.APP_NAME }}-production
-          image_tags: ${{ github.sha }}
-          dockerfile: './Dockerfile'
+        if: ${{ env.PROD_DEPLOY == 'true' }}
+
+      - name: Build & Push Docker Image to GAR (Production)
+        uses: useblacksmith/build-push-action@v2.3.0
+        with:
+          context: .
+          file: ./Dockerfile
           target: ${{ inputs.DOCKER_BUILD_TARGET }}
+          push: true
+          tags: ${{ inputs.GAR_PROD_REGION }}/${{ inputs.GCP_PROD_PROJECT_ID }}/${{ inputs.GAR_PRODUCTION_REPO }}/${{ inputs.APP_NAME }}-production:${{ steps.commit.outputs.sha }}
         if: ${{ env.PROD_DEPLOY == 'true' }}
 
       - name: Production deployment
