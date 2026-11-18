@@ -61,7 +61,12 @@ jobs:
 
     steps:
       # common steps
-      - uses: actions/checkout@v7
+      # Blacksmith keeps a git mirror on a sticky disk and updates it, instead of
+      # cloning the repository from scratch every run. dissociate copies the objects
+      # into the workspace, which docker-compose bind-mounts into the containers.
+      - uses: useblacksmith/checkout@v1
+        with:
+          dissociate: true
       - name: Copy env vars file
         run: cp .env-example .env
         if: inputs.copy_env
@@ -89,12 +94,21 @@ jobs:
       - name: download docker-compose cache
         run: docker-compose pull
 
-      # uses: satackey/action-docker-layer-caching@v0.0.11 (outdated for deprecations)
-      - uses: jpribyl/action-docker-layer-caching@v0.1.1
-        continue-on-error: true # Ignore the failure of a step and avoid terminating the job.
+      # Blacksmith's builder keeps its layer cache on a disk of its own, under this
+      # key, so a rebuild reuses every layer up to the first change. Without
+      # cache-key the action falls back to a plain local builder with no cache.
+      # Keyed by the Dockerfile, the same key cd.yml uses. This replaces
+      # jpribyl/action-docker-layer-caching, which saved and restored the whole
+      # image store through the GitHub cache on every run.
+      - name: Set up Docker builder
+        uses: useblacksmith/setup-docker-builder@v2.3.0
         with:
-          key: app-cache-${{ hashFiles('Dockerfile') }}
-          restore-keys: app-cache-{{ hashFiles('Dockerfile' }}
+          cache-key: Dockerfile
+      # docker-compose builds through the builder set up above and loads the image
+      # into the local store, where the `docker-compose run test` steps below find
+      # it. A step of its own, so the build shows up with its own time and log.
+      - name: Build the test image
+        run: docker-compose build test
 
       - name: Prepare backend DB
         env:
